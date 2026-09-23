@@ -11,6 +11,7 @@ the tests.py again to recreate it.
 
 import sqlite3
 import os
+import re
 from flask import Flask, request
 
 ### Unrelated to the exercise -- Starts here -- Please ignore
@@ -75,6 +76,26 @@ class Create(object):
 
 class DB_CRUD_ops(object):
 
+    _SYMBOL_RE = re.compile(r"[A-Z][A-Z0-9.-]{0,9}")
+    _SELECT_RE = re.compile(
+        r"SELECT\s+(\*|price)\s+FROM\s+stocks\s+WHERE\s+symbol\s*=\s*'([A-Z][A-Z0-9.-]{0,9})'\s*",
+        re.IGNORECASE,
+    )
+
+    @classmethod
+    def _validated_symbol(cls, value):
+        match = cls._SYMBOL_RE.match(value)
+        if not match:
+            raise ValueError("invalid stock symbol")
+        return match.group(0).upper()
+
+    @classmethod
+    def _parse_read_query(cls, query):
+        match = cls._SELECT_RE.fullmatch(query.strip())
+        if not match:
+            raise ValueError("only approved stock lookups are allowed")
+        return match.group(1).lower(), match.group(2).upper()
+
     # retrieves all info about a stock symbol from the stocks table
     # Example: get_stock_info('MSFT') will result into executing
     # SELECT * FROM stocks WHERE symbol = 'MSFT'
@@ -106,7 +127,8 @@ class DB_CRUD_ops(object):
                 # res += "[SANITIZED_QUERY]" + sanitized_query + "\n"
                 res += "CONFIRM THAT THE ABOVE QUERY IS NOT MALICIOUS TO EXECUTE"
             else:
-                cur.execute(query)
+                stock_symbol = self._validated_symbol(stock_symbol)
+                cur.execute("SELECT * FROM stocks WHERE symbol = ?", (stock_symbol,))
 
                 query_outcome = cur.fetchall()
                 for result in query_outcome:
@@ -133,16 +155,13 @@ class DB_CRUD_ops(object):
             cur = db_con.cursor()
 
             res = "[METHOD EXECUTED] get_stock_price\n"
+            stock_symbol = self._validated_symbol(stock_symbol)
             query = "SELECT price FROM stocks WHERE symbol = '" + stock_symbol + "'"
             res += "[QUERY] " + query + "\n"
-            if ';' in query:
-                res += "[SCRIPT EXECUTION]\n"
-                cur.executescript(query)
-            else:
-                cur.execute(query)
-                query_outcome = cur.fetchall()
-                for result in query_outcome:
-                    res += "[RESULT] " + str(result) + "\n"
+            cur.execute("SELECT price FROM stocks WHERE symbol = ?", (stock_symbol,))
+            query_outcome = cur.fetchall()
+            for result in query_outcome:
+                res += "[RESULT] " + str(result) + "\n"
             return res
 
         except sqlite3.Error as e:
@@ -167,10 +186,11 @@ class DB_CRUD_ops(object):
 
             res = "[METHOD EXECUTED] update_stock_price\n"
             # UPDATE stocks SET price = 310.0 WHERE symbol = 'MSFT'
+            stock_symbol = self._validated_symbol(stock_symbol)
             query = "UPDATE stocks SET price = '%d' WHERE symbol = '%s'" % (price, stock_symbol)
             res += "[QUERY] " + query + "\n"
 
-            cur.execute(query)
+            cur.execute("UPDATE stocks SET price = ? WHERE symbol = ?", (price, stock_symbol))
             db_con.commit()
             query_outcome = cur.fetchall()
             for result in query_outcome:
@@ -200,8 +220,11 @@ class DB_CRUD_ops(object):
             res = "[METHOD EXECUTED] exec_multi_query\n"
             for query in filter(None, query.split(';')):
                 res += "[QUERY]" + query + "\n"
-                query = query.strip()
-                cur.execute(query)
+                columns, symbol = self._parse_read_query(query)
+                if columns == 'price':
+                    cur.execute("SELECT price FROM stocks WHERE symbol = ?", (symbol,))
+                else:
+                    cur.execute("SELECT * FROM stocks WHERE symbol = ?", (symbol,))
                 db_con.commit()
 
                 query_outcome = cur.fetchall()
@@ -230,16 +253,14 @@ class DB_CRUD_ops(object):
 
             res = "[METHOD EXECUTED] exec_user_script\n"
             res += "[QUERY] " + query + "\n"
-            if ';' in query:
-                res += "[SCRIPT EXECUTION]"
-                cur.executescript(query)
-                db_con.commit()
+            columns, symbol = self._parse_read_query(query)
+            if columns == 'price':
+                cur.execute("SELECT price FROM stocks WHERE symbol = ?", (symbol,))
             else:
-                cur.execute(query)
-                db_con.commit()
-                query_outcome = cur.fetchall()
-                for result in query_outcome:
-                    res += "[RESULT] " + str(result)
+                cur.execute("SELECT * FROM stocks WHERE symbol = ?", (symbol,))
+            query_outcome = cur.fetchall()
+            for result in query_outcome:
+                res += "[RESULT] " + str(result)
             return res
 
         except sqlite3.Error as e:
